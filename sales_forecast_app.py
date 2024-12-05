@@ -148,9 +148,9 @@ def main():
         'Segment': ['Small', 'Small-Medium', 'Medium', 'Medium-Large', 'Large', 'Extra Large'],
         'ARR_per_Customer': [31500, 55125, 75700, 246750, 294625, 367500],
         'Implement_Income': [2400, 4200, 14000, 85000, 144375, 240000],
-        'Revenue_in_Segment': [0.25, 0.25, 0.25, 0.15, 0.05, 0.05],
-        'Days_to_Close': [90, 90, 120, 120, 180, 365],
-        'Close_Rate': [0.10, 0.10, 0.10, 0.10, 0.10, 0.10],
+        'Revenue_in_Segment': [0.05, 0.25, 0.25, 0.15, 0.00, 0.00],
+        'Days_to_Close': [90, 90, 120, 120, 180, 270],
+        'Close_Rate': [0.25, 0.25, 0.25, 0.10, 0.05, 0.05],
         'Days_to_Impl': [30, 60, 90, 120, 180, 270]
     }
     
