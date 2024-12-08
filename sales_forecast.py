@@ -9,7 +9,7 @@ class ModelParameters:
     """Container for all model parameters"""
     target_type: str  # 'ARR' or 'Deals'
     target_arr: float
-    target_deals: Dict[str, int]  # Deal targets by segment
+    target_deals: Dict[str, int]
     leads_per_rep: int
     close_rates: Dict[str, float]
     days_to_close: Dict[str, int]
@@ -18,15 +18,15 @@ class ModelParameters:
     existing_pipeline: Dict[str, int]
     start_date: str
     end_date: str
+    arr_per_customer: Dict[str, float]
+    implement_income: Dict[str, float]
 
 class SalesForecastModel:
     """Sales forecast model with variable parameters"""
     
     def __init__(self):
         self.base_data = {
-            'Segment': ['Small', 'Small-Medium', 'Medium', 'Medium-Large', 'Large', 'Extra Large'],
-            'ARR_per_Customer': [31500, 55125, 75700, 246750, 294625, 367500],
-            'Implement_Income': [2400, 4200, 14000, 85000, 144375, 240000],
+            'Segment': ['Small', 'Small-Medium', 'Medium', 'Medium-Large', 'Large', 'Extra Large']
         }
         self.df = pd.DataFrame(self.base_data)
     
@@ -55,7 +55,7 @@ class SalesForecastModel:
             monthly_deals[i] += 1
             
         return monthly_deals
-    
+
     def get_required_deals(self, df: pd.DataFrame, params: ModelParameters) -> pd.DataFrame:
         """Calculate required deals based on target type"""
         if params.target_type == 'ARR':
@@ -82,6 +82,10 @@ class SalesForecastModel:
     def calculate_revenue(self, params: ModelParameters) -> pd.DataFrame:
         """Calculate revenue with given parameters"""
         df = self.df.copy()
+        
+        # Add ARR and Implementation Income from parameters
+        df['ARR_per_Customer'] = df['Segment'].map(params.arr_per_customer)
+        df['Implement_Income'] = df['Segment'].map(params.implement_income)
         
         # Calculate number of months in date range
         start_date = pd.to_datetime(params.start_date)
@@ -174,7 +178,14 @@ class SalesForecastModel:
 default_params = ModelParameters(
     target_type='ARR',
     target_arr=2000000,
-    target_deals={segment: 0 for segment in ['Small', 'Small-Medium', 'Medium', 'Medium-Large', 'Large', 'Extra Large']},
+    target_deals={
+        'Small': 0,
+        'Small-Medium': 0,
+        'Medium': 0,
+        'Medium-Large': 0,
+        'Large': 0,
+        'Extra Large': 0
+    },
     leads_per_rep=30,
     close_rates={
         'Small': 0.25,
@@ -216,6 +227,22 @@ default_params = ModelParameters(
         'Large': 0,
         'Extra Large': 0
     },
+    arr_per_customer={
+        'Small': 31500,
+        'Small-Medium': 55125,
+        'Medium': 75700,
+        'Medium-Large': 246750,
+        'Large': 294625,
+        'Extra Large': 367500
+    },
+    implement_income={
+        'Small': 2400,
+        'Small-Medium': 4200,
+        'Medium': 14000,
+        'Medium-Large': 85000,
+        'Large': 144375,
+        'Extra Large': 240000
+    },
     start_date='2025-01-01',
     end_date='2025-12-31'
 )
@@ -229,3 +256,4 @@ if __name__ == "__main__":
     print(f"Implementation Revenue: ${results['Total_Impl_Revenue'].sum():,.2f}")
     print(f"Total 2025 Revenue: ${results['Total_Revenue'].sum() + results['Total_Impl_Revenue'].sum():,.2f}")
     print(f"Required Sales Reps: {np.ceil(results['Required_Pipeline_Slots'].max() / default_params.leads_per_rep):.0f}")
+
