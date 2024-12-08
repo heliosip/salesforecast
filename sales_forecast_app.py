@@ -1,378 +1,248 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta
-from PIL import Image
+import plotly.graph_objects as go
+import plotly.express as px
+from sales_forecast import SalesForecastModel, ModelParameters
 
-# Portfolio size reference data
-PORTFOLIO_SIZES = {
-    'Small': 400,
-    'Small-Medium': 700,
-    'Medium': 1200,
-    'Medium-Large': 5000,
-    'Large': 7500,
-    'Extra Large': 10000
-}
+st.set_page_config(page_title="Enterprise Sales Forecast Model", layout="wide")
 
-def run_forecast(data, target_arr, leads_per_rep):
-    df = pd.DataFrame(data)
-    
-    # Validate and calculate target ARR for each segment
-    total_percentage = df['Revenue_in_Segment'].sum()
-    if not np.isclose(total_percentage, 1.0, rtol=1e-3):
-        st.warning(f"Revenue percentages sum to {total_percentage:.2%}. They should sum to 100%.")
-    
-    df['Target_Segment_ARR'] = df['Revenue_in_Segment'] * target_arr
-    df['Annual_Customers_Needed'] = np.ceil(df['Target_Segment_ARR'] / df['ARR_per_Customer'])
-    df['Monthly_Customers_Needed'] = np.ceil(df['Annual_Customers_Needed'] / 12)
-    
-    df['Monthly_Leads'] = np.ceil(df['Monthly_Customers_Needed'] / df['Close_Rate'])
-    df['Monthly_Closed_Deals'] = np.ceil(df['Monthly_Leads'] * df['Close_Rate'])
-    df['Monthly_Lost_Deals'] = df['Monthly_Leads'] - df['Monthly_Closed_Deals']
-    df['Start_Month'] = np.ceil((df['Days_to_Close'] + df['Days_to_Impl']) / 30)
-    df['Months_Active_in_2025'] = 13 - df['Start_Month']
-    
-    df['Monthly_ARR'] = df['Monthly_Closed_Deals'] * df['ARR_per_Customer']
-    df['Monthly_Impl_Income'] = df['Monthly_Closed_Deals'] * df['Implement_Income']
-    
-    df['Active_Pipeline_Days'] = df['Days_to_Close']
-    df['Pipeline_Slots_Needed'] = np.ceil(df['Monthly_Leads'] * df['Active_Pipeline_Days'] / 30)
-    
-    return df
+# Initialize model
+model = SalesForecastModel()
 
-def calculate_monthly_results(df):
-    months = ['January', 'February', 'March', 'April', 'May', 'June', 
-             'July', 'August', 'September', 'October', 'November', 'December']
-    
-    segments = {}
-    for _, row in df.iterrows():
-        if row['Start_Month'] <= 12:
-            segments[row['Segment']] = {
-                'monthly_arr': row['Monthly_ARR'],
-                'monthly_impl_income': row['Monthly_Impl_Income'],
-                'start_month': int(row['Start_Month']),
-                'closed_deals': int(row['Monthly_Closed_Deals']),
-                'monthly_leads': int(row['Monthly_Leads']),
-                'lost_deals': int(row['Monthly_Lost_Deals']),
-                'days_to_close': int(row['Days_to_Close'])
-            }
-    
-    monthly_results = []
-    total_arr = 0
-    segment_deals = {segment: [] for segment in segments.keys()}
-    pipeline_metrics = []
-    open_leads = 0
-    
-    # Track leads and their expected close months
-    lead_tracking = []  # List of tuples (close_month, segment)
-    
-    for month_num, month in enumerate(months, 1):
-        active_segments = []
-        new_arr = 0
-        monthly_revenue = 0
-        impl_income = 0
-        new_leads = 0
-        
-        # Add new leads for all segments starting in January
-        for segment, details in segments.items():
-            new_segment_leads = details['monthly_leads']
-            new_leads += new_segment_leads
-            
-            # Calculate when these leads will close
-            close_month = month_num + (details['days_to_close'] // 30)
-            for _ in range(new_segment_leads):
-                lead_tracking.append((close_month, segment))
-        
-        # Calculate closures for this month
-        closing_leads = [lead for lead in lead_tracking if lead[0] == month_num]
-        closed_leads = len(closing_leads)
-        lost_leads = int(closed_leads * 0.9)  # 90% lost based on 10% close rate
-        closed_leads = int(closed_leads * 0.1)  # 10% close rate
-        
-        # Process revenue for active segments
-        for segment, details in segments.items():
-            if month_num >= details['start_month']:
-                # Only add to active segments and revenue when segment is active
-                segment_deals[segment].append(details['closed_deals'])
-                active_segments.append(f"{segment} ({details['closed_deals']})")
-                
-                # Calculate revenue metrics
-                total_segment_deals = sum(segment_deals[segment])
-                new_arr += details['monthly_arr']
-                monthly_revenue += (total_segment_deals * details['monthly_arr'] / 12)
-                impl_income += details['monthly_impl_income']
-        
-        # Update open leads
-        open_leads = open_leads + new_leads - closed_leads - lost_leads
-        
-        # Update total ARR
-        total_arr += new_arr
-        
-        monthly_results.append({
-            'Month': month,
-            'New_ARR': new_arr,
-            'Total_ARR': total_arr,
-            'Revenue_ARR': monthly_revenue,
-            'Implementation_Revenue': impl_income,
-            'Total_Revenue': monthly_revenue + impl_income,
-            'Active_Segments': ', '.join(active_segments)
-        })
-        
-        pipeline_metrics.append({
-            'Month': month,
-            'New Leads': new_leads,
-            'Open Leads': open_leads,
-            'Leads Closed': closed_leads,
-            'Leads Lost': lost_leads
-        })
-    
-    return monthly_results, segments, segment_deals, pipeline_metrics
+# Sidebar - Model Assumptions
+st.sidebar.title("Model Assumptions")
+target_arr = st.sidebar.number_input("Target ARR ($)", value=2000000, step=100000, format="%d")
+leads_per_rep = st.sidebar.number_input("Leads per Sales Rep", value=30, min_value=1, step=5)
 
-def main():
-    # Page config and logo
-    st.set_page_config(page_title="Enterprise Sales Forecast Model", layout="wide")
-    
-    # Logo and title in a row
-    st.image('logo.png', width=150)
-    st.title('Enterprise Sales Forecast Model')
+# Segment Parameters
+st.sidebar.title("Segment Parameters")
+segments = ['Small', 'Small-Medium', 'Medium', 'Medium-Large', 'Large', 'Extra Large']
 
-    # Sidebar inputs
-    st.sidebar.header('Model Assumptions')
-    target_arr = st.sidebar.number_input('Target ARR ($)', value=2000000, step=100000, format='%d',
-                                       help="Annual Recurring Revenue target for the year")
-    leads_per_rep = st.sidebar.number_input('Leads per Sales Rep', value=30, step=5,
-                                          help="Maximum number of leads a sales rep can actively work")
-    
-    # Initial data
-    default_data = {
-        'Segment': ['Small', 'Small-Medium', 'Medium', 'Medium-Large', 'Large', 'Extra Large'],
-        'ARR_per_Customer': [31500, 55125, 75700, 246750, 294625, 367500],
-        'Implement_Income': [2400, 4200, 14000, 85000, 144375, 240000],
-        'Revenue_in_Segment': [0.05, 0.25, 0.25, 0.15, 0.00, 0.00],
-        'Days_to_Close': [90, 90, 120, 120, 180, 270],
-        'Close_Rate': [0.25, 0.25, 0.25, 0.10, 0.05, 0.05],
-        'Days_to_Impl': [30, 60, 90, 120, 180, 270]
+# Create expanders for each parameter type
+with st.sidebar.expander("Close Rates (%)", expanded=False):
+    close_rates = {}
+    # Default rates
+    default_rates = {
+        'Small': 25.0,
+        'Small-Medium': 25.0,
+        'Medium': 15.0,
+        'Medium-Large': 15.0,
+        'Large': 10.0,
+        'Extra Large': 10.0
     }
-    
-    # Sidebar parameter inputs
-    st.sidebar.subheader("Model Parameters")
-    edited_data = default_data.copy()
-    
-    with st.sidebar.expander("Revenue Parameters", expanded=False):
-        for i, segment in enumerate(default_data['Segment']):
-            edited_data['ARR_per_Customer'][i] = st.number_input(
-                f"{segment} ARR/Customer",
-                value=default_data['ARR_per_Customer'][i],
-                step=1000,
-                format='%d',
-                help=f"Annual Recurring Revenue per customer for {segment} segment"
-            )
-            edited_data['Implement_Income'][i] = st.number_input(
-                f"{segment} Impl Income",
-                value=default_data['Implement_Income'][i],
-                step=1000,
-                format='%d',
-                help="One-time implementation revenue per customer"
-            )
-            edited_data['Revenue_in_Segment'][i] = st.number_input(
-                f"{segment} Revenue %",
-                value=default_data['Revenue_in_Segment'][i],
-                step=0.01,
-                format="%.2f",
-                help="Percentage of total ARR target allocated to this segment"
-            )
-    
-    with st.sidebar.expander("Timeline Parameters", expanded=False):
-        for i, segment in enumerate(default_data['Segment']):
-            edited_data['Days_to_Close'][i] = st.number_input(
-                f"{segment} Days to Close",
-                value=default_data['Days_to_Close'][i],
-                step=5,
-                format='%d',
-                help="Average number of days to close a deal"
-            )
-            edited_data['Days_to_Impl'][i] = st.number_input(
-                f"{segment} Days to Impl",
-                value=default_data['Days_to_Impl'][i],
-                step=5,
-                format='%d',
-                help="Average number of days for implementation"
-            )
-    
-    with st.sidebar.expander("Sales Parameters", expanded=False):
-        for i, segment in enumerate(default_data['Segment']):
-            edited_data['Close_Rate'][i] = st.number_input(
-                f"{segment} Close Rate",
-                value=default_data['Close_Rate'][i],
-                step=0.01,
-                format="%.2f",
-                help="Percentage of leads that convert to customers"
-            )
-    
-    # Add Calculate button to sidebar
-    calculate_button = st.sidebar.button('Calculate Forecast')
-    
-    # Create main tabs
-    tabs = st.tabs(['Dashboard', 'Pipeline Analysis', 'Monthly Projections', 'Segment Analysis'])
-    tab1, tab2, tab3, tab4 = tabs
-    
-    if calculate_button:
-        # Run calculations
-        df = run_forecast(edited_data, target_arr, leads_per_rep)
-        monthly_results, segments, segment_deals, pipeline_metrics = calculate_monthly_results(df)
-        
-        with tab1:
-            st.header('Dashboard')
-            
-            # Calculate key metrics
-            final_month = monthly_results[-1]
-            total_impl = sum(r['Implementation_Revenue'] for r in monthly_results)
-            annual_revenue_arr = sum(r['Revenue_ARR'] for r in monthly_results)
-            total_deals = sum(sum(deals) for deals in segment_deals.values())
-            
-            # Display metrics in columns
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric(
-                    "Total ARR (Book of Business)", 
-                    f"${final_month['Total_ARR']:,.0f}",
-                    help="Total Annual Recurring Revenue at year end"
-                )
-            with col2:
-                st.metric(
-                    "Total Revenue", 
-                    f"${(annual_revenue_arr + total_impl):,.0f}",
-                    help="Total revenue including ARR and implementation income"
-                )
-            with col3:
-                st.metric(
-                    "Total Deals", 
-                    f"{total_deals:,.0f}",
-                    help="Total number of closed deals across all segments"
-                )
-            
-            # Enhanced Portfolio Analysis table
-            st.subheader('Portfolio Analysis by Segment')
-            segment_data = []
-            for segment in default_data['Segment']:
-                total_deals = sum(segment_deals.get(segment, [0]))
-                segment_arr = total_deals * edited_data['ARR_per_Customer'][edited_data['Segment'].index(segment)]
-                segment_data.append({
-                    'Segment': segment,
-                    'Portfolio Size': PORTFOLIO_SIZES[segment],
-                    'Active Customers': total_deals,
-                    'Segment ARR': segment_arr
-                })
-            
-            segment_df = pd.DataFrame(segment_data)
-            st.dataframe(
-                segment_df.style.format({
-                    'Portfolio Size': '{:,.0f}',
-                    'Active Customers': '{:,.0f}',
-                    'Segment ARR': '${:,.0f}'
-                }),
-                use_container_width=True
-            )
-        
-        with tab2:
-            st.header('Pipeline Analysis')
-            
-            total_pipeline_slots = df['Pipeline_Slots_Needed'].sum()
-            total_monthly_leads = df['Monthly_Leads'].sum()
-            sales_reps_needed = np.ceil(total_pipeline_slots / leads_per_rep)
-            
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric(
-                    "Monthly New Leads", 
-                    f"{total_monthly_leads:.0f}",
-                    help="Total new leads needed each month across all segments"
-                )
-            with col2:
-                st.metric(
-                    "Active Pipeline Slots", 
-                    f"{total_pipeline_slots:.0f}",
-                    help="Total number of leads being worked at any time"
-                )
-            with col3:
-                st.metric(
-                    "Sales Reps Needed", 
-                    f"{sales_reps_needed:.0f}",
-                    help=f"Number of sales reps needed based on {leads_per_rep} leads per rep"
-                )
-            
-            st.subheader('Pipeline Requirements by Segment')
-            pipeline_df = df[['Segment', 'Monthly_Leads', 'Days_to_Close', 'Pipeline_Slots_Needed']]
-            st.dataframe(
-                pipeline_df.style.format({
-                    'Monthly_Leads': '{:.1f}',
-                    'Pipeline_Slots_Needed': '{:.1f}'
-                }),
-                use_container_width=True
-            )
-            
-            st.subheader('Monthly Pipeline Metrics')
-            pipeline_metrics_df = pd.DataFrame(pipeline_metrics)
-            st.dataframe(
-                pipeline_metrics_df.style.format({
-                    'New Leads': '{:.0f}',
-                    'Open Leads': '{:.0f}',
-                    'Leads Closed': '{:.0f}',
-                    'Leads Lost': '{:.0f}'
-                }),
-                use_container_width=True
-            )
+    for segment in segments:
+        close_rates[segment] = st.number_input(
+            f"{segment} Close Rate",
+            value=default_rates[segment],
+            min_value=0.0,
+            max_value=100.0,
+            step=1.0,
+            key=f"close_rate_{segment}"
+        ) / 100.0
 
-        with tab3:
-            st.subheader('Monthly Revenue Projections')
-            monthly_df = pd.DataFrame(monthly_results)
-            st.dataframe(
-                monthly_df.style.format({
-                    'New_ARR': '${:,.0f}',
-                    'Total_ARR': '${:,.0f}',
-                    'Revenue_ARR': '${:,.0f}',
-                    'Implementation_Revenue': '${:,.0f}',
-                    'Total_Revenue': '${:,.0f}'
-                }),
-                use_container_width=True
-            )     
-        with tab4:
-            st.subheader('Segment Analysis')
-            analysis_columns = [
-                'Segment', 'Target_Segment_ARR', 'Annual_Customers_Needed',
-                'Monthly_Leads', 'Monthly_Closed_Deals', 'Monthly_ARR',
-                'Start_Month', 'Months_Active_in_2025'
-            ]
-            analysis_df = df[analysis_columns]
-            
-            st.dataframe(
-                analysis_df.style.format({
-                    'Target_Segment_ARR': '${:,.0f}',
-                    'Annual_Customers_Needed': '{:.1f}',
-                    'Monthly_Leads': '{:.1f}',
-                    'Monthly_Closed_Deals': '{:.1f}',
-                    'Monthly_ARR': '${:,.0f}',
-                    'Start_Month': '{:.0f}',
-                    'Months_Active_in_2025': '{:.0f}'
-                }),
-                use_container_width=True
-            )
-            
-            # Add explanation of calculations
-            with st.expander("Calculation Details", expanded=False):
-                st.markdown("""
-                ### How the numbers are calculated:
-                
-                1. **Target Segment ARR** = Total Target ARR × Revenue in Segment %
-                2. **Annual Customers Needed** = Target Segment ARR ÷ ARR per Customer
-                3. **Monthly Leads Required** = (Annual Customers ÷ 12) ÷ Close Rate
-                4. **Monthly Closed Deals** = Monthly Leads × Close Rate
-                5. **Monthly ARR** = Monthly Closed Deals × ARR per Customer
-                6. **Start Month** = (Days to Close + Days to Implement) ÷ 30
-                7. **Months Active** = 13 - Start Month
-                
-                Note: Values are rounded up to ensure sufficient pipeline coverage.
-                """)
+with st.sidebar.expander("Days to Close", expanded=False):
+    days_to_close = {}
+    default_close_days = {
+        'Small': 90,
+        'Small-Medium': 90,
+        'Medium': 120,
+        'Medium-Large': 120,
+        'Large': 180,
+        'Extra Large': 365
+    }
+    for segment in segments:
+        days_to_close[segment] = st.number_input(
+            f"{segment} Days",
+            value=default_close_days[segment],
+            min_value=30,
+            step=30,
+            key=f"days_close_{segment}"
+        )
 
-if __name__ == '__main__':
-    main()
+with st.sidebar.expander("Days to Implement", expanded=False):
+    days_to_impl = {}
+    default_impl_days = {
+        'Small': 30,
+        'Small-Medium': 60,
+        'Medium': 90,
+        'Medium-Large': 120,
+        'Large': 180,
+        'Extra Large': 270
+    }
+    for segment in segments:
+        days_to_impl[segment] = st.number_input(
+            f"{segment} Days",
+            value=default_impl_days[segment],
+            min_value=30,
+            step=30,
+            key=f"days_impl_{segment}"
+        )
+
+# Create parameters object
+params = ModelParameters(
+    target_arr=target_arr,
+    leads_per_rep=leads_per_rep,
+    close_rates=close_rates,
+    days_to_close=days_to_close,
+    days_to_impl=days_to_impl,
+    segment_distribution={
+        'Small': 0.30,
+        'Small-Medium': 0.30,
+        'Medium': 0.25,
+        'Medium-Large': 0.15,
+        'Large': 0.0,
+        'Extra Large': 0.0
+    }
+)
+
+# Calculate results
+results = model.calculate_revenue(params)
+
+# Dashboard
+st.title("Enterprise Sales Forecast Dashboard")
+
+# Key Metrics Row 1
+col1, col2, col3, col4 = st.columns(4)
+with col1:
+    st.metric("Target ARR", f"${target_arr:,.0f}")
+with col2:
+    st.metric("Total ARR", f"${results['Total_ARR'].sum():,.0f}")
+with col3:
+    st.metric("ARR Achievement", f"{(results['Total_ARR'].sum() / target_arr * 100):.1f}%")
+with col4:
+    max_pipeline_slots = results['Required_Pipeline_Slots'].max()
+    required_reps = np.ceil(max_pipeline_slots / leads_per_rep)
+    st.metric("Required Sales Reps", f"{required_reps:.0f}")
+
+# Key Metrics Row 2
+col1, col2, col3 = st.columns(3)
+with col1:
+    total_revenue = results['Total_Revenue'].sum()
+    st.metric("2025 Revenue", f"${total_revenue:,.0f}")
+with col2:
+    total_impl = results['Total_Impl_Revenue'].sum()
+    st.metric("Implementation Revenue", f"${total_impl:,.0f}")
+with col3:
+    st.metric("Total 2025 Revenue", f"${total_revenue + total_impl:,.0f}")
+
+# Monthly Progress Charts
+st.subheader("Monthly Progression")
+
+# Prepare monthly data
+monthly_data = []
+for month in range(1, 13):
+    monthly_data.append({
+        'Month': month,
+        'New_Deals': results[f'Month_{month}_Deals'].sum(),
+        'Active_Deals': results[f'Month_{month}_Active_Deals'].sum(),
+        'Pipeline_Slots': results[f'Month_{month}_Pipeline'].sum(),
+        'New_ARR': results[f'Month_{month}_ARR'].sum(),
+        'Revenue': results[f'Month_{month}_Revenue'].sum()
+    })
+monthly_df = pd.DataFrame(monthly_data)
+
+# ARR and Revenue Chart
+col1, col2 = st.columns(2)
+
+with col1:
+    fig1 = go.Figure()
+    fig1.add_trace(go.Bar(x=monthly_df['Month'], y=monthly_df['New_ARR'], name='New ARR'))
+    fig1.add_trace(go.Line(x=monthly_df['Month'], y=monthly_df['Revenue'], name='Revenue'))
+    fig1.update_layout(title='Monthly ARR and Revenue',
+                      xaxis_title='Month',
+                      yaxis_title='Amount ($)',
+                      height=400)
+    st.plotly_chart(fig1, use_container_width=True)
+
+with col2:
+    fig2 = go.Figure()
+    fig2.add_trace(go.Bar(x=monthly_df['Month'], y=monthly_df['New_Deals'], name='New Deals'))
+    fig2.add_trace(go.Line(x=monthly_df['Month'], 
+                          y=monthly_df['Pipeline_Slots'], 
+                          name='Pipeline Slots'))
+    fig2.update_layout(title='Monthly Deals and Pipeline',
+                      xaxis_title='Month',
+                      yaxis_title='Count',
+                      height=400)
+    st.plotly_chart(fig2, use_container_width=True)
+
+# Segment Analysis
+st.subheader("Segment Analysis")
+
+# Prepare segment data
+segment_data = results[results['Total_ARR'] > 0].copy()
+segment_data = segment_data[['Segment', 'Total_ARR', 'Total_Revenue', 'Total_Deals', 
+                            'Required_Pipeline_Slots', 'Close_Rate', 'Days_to_Close']]
+
+# Segment Charts
+col1, col2 = st.columns(2)
+
+with col1:
+    fig3 = px.treemap(segment_data,
+                      path=['Segment'],
+                      values='Total_ARR',
+                      title='ARR Distribution by Segment')
+    fig3.update_layout(height=400)
+    st.plotly_chart(fig3, use_container_width=True)
+
+with col2:
+    fig4 = px.bar(segment_data,
+                  x='Segment',
+                  y='Total_Deals',
+                  title='Deals by Segment',
+                  text='Total_Deals')
+    fig4.update_traces(texttemplate='%{text:.0f}', textposition='outside')
+    fig4.update_layout(height=400)
+    st.plotly_chart(fig4, use_container_width=True)
+
+# Detailed Segment Metrics
+st.subheader("Segment Details")
+formatted_segment_data = segment_data.copy()
+formatted_segment_data['Close_Rate'] = formatted_segment_data['Close_Rate'].map('{:.1%}'.format)
+formatted_segment_data['Total_ARR'] = formatted_segment_data['Total_ARR'].map('${:,.0f}'.format)
+formatted_segment_data['Total_Revenue'] = formatted_segment_data['Total_Revenue'].map('${:,.0f}'.format)
+formatted_segment_data = formatted_segment_data.rename(columns={
+    'Close_Rate': 'Close Rate',
+    'Days_to_Close': 'Days to Close',
+    'Total_ARR': 'Total ARR',
+    'Total_Revenue': '2025 Revenue',
+    'Total_Deals': 'Total Deals',
+    'Required_Pipeline_Slots': 'Pipeline Slots'
+})
+st.dataframe(formatted_segment_data, use_container_width=True)
+
+# Monthly Details Table
+st.subheader("Monthly Details")
+formatted_monthly = monthly_df.copy()
+formatted_monthly['New_ARR'] = formatted_monthly['New_ARR'].map('${:,.0f}'.format)
+formatted_monthly['Revenue'] = formatted_monthly['Revenue'].map('${:,.0f}'.format)
+formatted_monthly = formatted_monthly.rename(columns={
+    'New_Deals': 'New Deals',
+    'Active_Deals': 'Active Deals',
+    'Pipeline_Slots': 'Pipeline Slots',
+    'New_ARR': 'New ARR',
+    'Revenue': 'Monthly Revenue'
+})
+st.dataframe(formatted_monthly, use_container_width=True)
+
+# Download section
+st.subheader("Export Data")
+col1, col2 = st.columns(2)
+
+with col1:
+    csv_monthly = monthly_df.to_csv(index=False)
+    st.download_button(
+        label="Download Monthly Data",
+        data=csv_monthly,
+        file_name="monthly_forecast.csv",
+        mime="text/csv"
+    )
+
+with col2:
+    csv_segment = segment_data.to_csv(index=False)
+    st.download_button(
+        label="Download Segment Data",
+        data=csv_segment,
+        file_name="segment_forecast.csv",
+        mime="text/csv"
+    )
