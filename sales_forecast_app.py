@@ -119,6 +119,46 @@ with st.sidebar.expander("Days to Implement", expanded=False):
             key=f"days_impl_{segment}"
         )
 
+with st.sidebar.expander("ARR per Customer ($)", expanded=False):
+    arr_per_customer = {}
+    default_arr = {
+        'Small': 31500,
+        'Small-Medium': 55125,
+        'Medium': 75700,
+        'Medium-Large': 246750,
+        'Large': 294625,
+        'Extra Large': 367500
+    }
+    for segment in segments:
+        arr_per_customer[segment] = st.number_input(
+            f"{segment} ARR",
+            value=default_arr[segment],
+            min_value=0,
+            step=1000,
+            format="%d",
+            key=f"arr_{segment}"
+        )
+
+with st.sidebar.expander("Implementation Revenue ($)", expanded=False):
+    implement_income = {}
+    default_impl = {
+        'Small': 2400,
+        'Small-Medium': 4200,
+        'Medium': 14000,
+        'Medium-Large': 85000,
+        'Large': 144375,
+        'Extra Large': 240000
+    }
+    for segment in segments:
+        implement_income[segment] = st.number_input(
+            f"{segment} Implementation",
+            value=default_impl[segment],
+            min_value=0,
+            step=1000,
+            format="%d",
+            key=f"impl_{segment}"
+        )
+
 # Existing Pipeline Input
 with st.sidebar.expander("Existing Pipeline", expanded=False):
     existing_pipeline = {}
@@ -150,7 +190,9 @@ params = ModelParameters(
     } if target_type == 'ARR' else {segment: 1.0 for segment in segments},
     existing_pipeline=existing_pipeline,
     start_date=start_date.strftime('%Y-%m-%d'),
-    end_date=end_date.strftime('%Y-%m-%d')
+    end_date=end_date.strftime('%Y-%m-%d'),
+    arr_per_customer=arr_per_customer,
+    implement_income=implement_income
 )
 
 # Calculate results
